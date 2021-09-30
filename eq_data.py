@@ -1,9 +1,9 @@
 # Databricks notebook source
 import requests 
 import json
-from geopy.geocoders import Nominatim
-
-from pyspark.sql.functions import udf, col,explode,from_unixtime,substring,length,expr
+from zipfile import ZipFile
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import udf, col,explode,expr,from_unixtime,substring,length,regexp_extract,broadcast,lit,count
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType, ArrayType,FloatType
 from pyspark.sql import Row
 
@@ -26,18 +26,21 @@ def make_request_usgs(startdate,enddate):
 
 # COMMAND ----------
 
-geolocator = Nominatim(user_agent="get_eq_position")
-def position(lad,long):
-      coord = str(lad) + ", " + str(long)
-      try:
-        location = geolocator.reverse(coord)
-        return location.raw['address'].get("country","")
-      except:
-        return None
+with open("/dbfs/allCountries.zip","wb") as file:
+  reponse = requests.get("http://download.geonames.org/export/dump/allCountries.zip")
+  file.write(reponse.content)
 
 # COMMAND ----------
 
-position(10,139)
+# MAGIC %sh
+# MAGIC cd /
+# MAGIC cd dbfs
+# MAGIC ls
+
+# COMMAND ----------
+
+with ZipFile("/dbfs/allCountries.zip","r") as zip:
+  zip.extract("allCountries.txt","/dbfs")
 
 # COMMAND ----------
 
@@ -61,8 +64,6 @@ schema = StructType([
 
 udf_execute_api = udf(make_request_usgs, schema)
 
-spark.udf.register("udf_position", position, StringType())
-
 # COMMAND ----------
 
 api_row = Row("startdate", "enddate")
@@ -83,16 +84,63 @@ result_df = result_df.select(explode(col("result.features")).alias("data"))
 result_df = result_df.select(col("data.properties.place").alias("place"),\
                  expr("from_unixtime(substring(data.properties.time,0,length(data.properties.time)-3),'dd-MM-yyyy HH:mm:ss')").alias("timestamp_UTC"),\
                  col("data.properties.mag").cast(FloatType()).alias("mag"),\
-                 col("data.geometry.coordinates")[1].alias("latitude"),col("data.geometry.coordinates")[0].alias("longitude"),\
-                 col("data.properties.alert").alias("alert"),col("data.properties.tsunami").alias("tsunami")).orderBy("timestamp_UTC",ascending=False).write.mode("overwrite").saveAsTable("earthquakes")
+                 col("data.geometry.coordinates")[1].cast(FloatType()).alias("latitude"),\
+                 col("data.geometry.coordinates")[0].cast(FloatType()).alias("longitude"),\
+                 col("data.properties.alert").alias("alert"),col("data.properties.tsunami").alias("tsunami")).\
+                 orderBy("timestamp_UTC",ascending=False)
 
 # COMMAND ----------
 
-#result_df = result_df.select(result_df.place,result_df.timestamp_UTC,result_df.mag,result_df.latitude,result_df.longitude,\
-#                             expr("udf_position(latitude,longitude)").alias("position")).first()
+def download_country_mapper():
+    response = requests.get("https://raw.githubusercontent.com/umpirsky/country-list/master/data/ak/country.txt")
+    data = list()
+    
+    for item in response.text.split("\n")[0:-1]:
+        a,b = item[0:-5],item[-4:]
+        data.append([a,b])
+        
+    return data
+
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC 
-# MAGIC select * from earthquakes
+countries_mapper_df = spark.createDataFrame(download_country_mapper(),\
+                                         StructType([StructField("country_name",StringType()),\
+                                                     StructField("country_code",StringType())]))
+
+countries_mapper_df = countries_mapper_df.select(col("country_name"),\
+                                           regexp_extract(col("country_code"),"([A-Z]+)",1).alias("country_code"))
+
+
+# COMMAND ----------
+
+locations_df = spark.read.option("delimiter","\t").csv("/allCountries.txt")
+
+locations_df = locations_df.select(col("_c1").alias("location"),col("_c4").cast(FloatType()).alias("latitude"),\
+                                   col("_c5").cast(FloatType()).alias("longitude"),col("_c8").alias("country_code"))
+
+locations_df = locations_df.join(broadcast(countries_mapper_df),"country_code").drop("country_code")
+
+locations_df = locations_df.dropDuplicates(["latitude","longitude"])
+
+# COMMAND ----------
+
+result_df.createOrReplaceTempView("result_vw")
+locations_df.createOrReplaceTempView("locations_vw")
+
+result_df = spark.sql("""select r.place
+                              , r.timestamp_UTC
+                              , r.mag
+                              , r.latitude
+                              , r.longitude
+                              , l.country_name
+                      from result_vw r
+                      join locations_vw l ON (l.latitude between r.latitude -0.5 and r.latitude + 0.5)
+                                         and (l.longitude between r.longitude -0.5 and r.longitude + 0.5) """).dropDuplicates().cache()
+
+# COMMAND ----------
+
+result_agg_df = result_df.groupBy("country_name").agg(count(lit(1)).alias("earthquakes_no"))
+
+result_agg_df.write.mode("overwrite").saveAsTable("earthquakes_agg")
+result_df.write.mode("overwrite").saveAsTable("earthquakes")
