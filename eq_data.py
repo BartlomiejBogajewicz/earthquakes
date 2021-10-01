@@ -3,12 +3,13 @@ import requests
 import json
 from zipfile import ZipFile
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col,explode,expr,from_unixtime,substring,length,regexp_extract,broadcast,lit,count
+from pyspark.sql.functions import udf,col,explode,expr,from_unixtime,substring,length,regexp_extract,broadcast,lit,count
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType, ArrayType,FloatType
 from pyspark.sql import Row
 
 # COMMAND ----------
 
+#get data from earthquake.usgs.gov api 
 def make_request_usgs(startdate,enddate):
     
     url = "https://earthquake.usgs.gov/fdsnws/event/1/query?"
@@ -26,17 +27,30 @@ def make_request_usgs(startdate,enddate):
 
 # COMMAND ----------
 
+#get list with all countries and their country codes
+def download_country_mapper():
+    response = requests.get("https://raw.githubusercontent.com/umpirsky/country-list/master/data/ak/country.txt")
+    data = list()
+    
+    for item in response.text.split("\n")[0:-1]:
+        a,b = item[0:-5],item[-4:]
+        data.append([a,b])
+        
+    return data
+
+# COMMAND ----------
+
+#download the file containg over 12 milion coordinates 
 with open("/dbfs/allCountries.zip","wb") as file:
   reponse = requests.get("http://download.geonames.org/export/dump/allCountries.zip")
   file.write(reponse.content)
-
-# COMMAND ----------
-
+  
 with ZipFile("/dbfs/allCountries.zip","r") as zip:
-  zip.extract("allCountries.txt","/dbfs")
+  zip.extract("allCountries.txt","/dbfs")  
 
 # COMMAND ----------
 
+#create schema for earthquakes dataset
 schema = StructType([
   StructField("features", ArrayType(
     StructType([
@@ -55,24 +69,20 @@ schema = StructType([
 
 # COMMAND ----------
 
+#api request is executed by spark and saved in dataframe
 udf_execute_api = udf(make_request_usgs, schema)
-
-# COMMAND ----------
 
 api_row = Row("startdate", "enddate")
 request_df = spark.createDataFrame([
-            api_row('2021-09-28','2021-09-29')
+            api_row('2021-09-20','2021-10-01')
           ])
-
-# COMMAND ----------
 
 result_df = request_df.withColumn("result", udf_execute_api(col("startdate"), col("enddate"))) 
 
 # COMMAND ----------
 
+#data tranformation
 result_df = result_df.select(explode(col("result.features")).alias("data"))
-
-# COMMAND ----------
 
 result_df = result_df.select(col("data.properties.place").alias("place"),\
                  expr("from_unixtime(substring(data.properties.time,0,length(data.properties.time)-3),'dd-MM-yyyy HH:mm:ss')").alias("timestamp_UTC"),\
@@ -81,19 +91,6 @@ result_df = result_df.select(col("data.properties.place").alias("place"),\
                  col("data.geometry.coordinates")[0].cast(FloatType()).alias("longitude"),\
                  col("data.properties.alert").alias("alert"),col("data.properties.tsunami").alias("tsunami")).\
                  orderBy("timestamp_UTC",ascending=False)
-
-# COMMAND ----------
-
-def download_country_mapper():
-    response = requests.get("https://raw.githubusercontent.com/umpirsky/country-list/master/data/ak/country.txt")
-    data = list()
-    
-    for item in response.text.split("\n")[0:-1]:
-        a,b = item[0:-5],item[-4:]
-        data.append([a,b])
-        
-    return data
-
 
 # COMMAND ----------
 
@@ -107,6 +104,7 @@ countries_mapper_df = countries_mapper_df.select(col("country_name"),\
 
 # COMMAND ----------
 
+#joining list of countries with codes with list of location
 locations_df = spark.read.option("delimiter","\t").csv("/allCountries.txt")
 
 locations_df = locations_df.select(col("_c1").alias("location"),col("_c4").cast(FloatType()).alias("latitude"),\
@@ -118,6 +116,7 @@ locations_df = locations_df.dropDuplicates(["latitude","longitude"])
 
 # COMMAND ----------
 
+#mapping coordinates from earthquakes api to nearest coordinates in location file to know in which country the earthquake had occured
 result_df.createOrReplaceTempView("result_vw")
 locations_df.createOrReplaceTempView("locations_vw")
 
@@ -133,7 +132,8 @@ result_with_countries_df = spark.sql("""select  r.place
 
 # COMMAND ----------
 
+#aggreagate the data and save results
 result_agg_df = result_with_countries_df.groupBy("country_name").agg(count(lit(1)).alias("earthquakes_no"))
 
-result_agg_df.write.mode("overwrite").saveAsTable("earthquakes_agg")
+result_agg_dfwrite.mode("overwrite").saveAsTable("earthquakes_agg")
 result_with_countries_df.write.mode("overwrite").saveAsTable("earthquakes")
