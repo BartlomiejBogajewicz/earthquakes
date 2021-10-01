@@ -32,13 +32,6 @@ with open("/dbfs/allCountries.zip","wb") as file:
 
 # COMMAND ----------
 
-# MAGIC %sh
-# MAGIC cd /
-# MAGIC cd dbfs
-# MAGIC ls
-
-# COMMAND ----------
-
 with ZipFile("/dbfs/allCountries.zip","r") as zip:
   zip.extract("allCountries.txt","/dbfs")
 
@@ -128,19 +121,19 @@ locations_df = locations_df.dropDuplicates(["latitude","longitude"])
 result_df.createOrReplaceTempView("result_vw")
 locations_df.createOrReplaceTempView("locations_vw")
 
-result_df = spark.sql("""select r.place
-                              , r.timestamp_UTC
-                              , r.mag
-                              , r.latitude
-                              , r.longitude
-                              , l.country_name
-                      from result_vw r
-                      join locations_vw l ON (l.latitude between r.latitude -0.5 and r.latitude + 0.5)
-                                         and (l.longitude between r.longitude -0.5 and r.longitude + 0.5) """).dropDuplicates().cache()
+result_with_countries_df = spark.sql("""select  r.place
+                                              , r.timestamp_UTC
+                                              , r.mag
+                                              , r.latitude
+                                              , r.longitude
+                                              , NVL(l.country_name,"Ocean") as country_name
+                                      from result_vw r
+                                      left join locations_vw l ON (l.latitude between r.latitude -0.5 and r.latitude + 0.5)
+                                                              and (l.longitude between r.longitude -0.5 and r.longitude + 0.5) """).dropDuplicates(["timestamp_UTC","mag","latitude","longitude"]).cache()
 
 # COMMAND ----------
 
-result_agg_df = result_df.groupBy("country_name").agg(count(lit(1)).alias("earthquakes_no"))
+result_agg_df = result_with_countries_df.groupBy("country_name").agg(count(lit(1)).alias("earthquakes_no"))
 
 result_agg_df.write.mode("overwrite").saveAsTable("earthquakes_agg")
-result_df.write.mode("overwrite").saveAsTable("earthquakes")
+result_with_countries_df.write.mode("overwrite").saveAsTable("earthquakes")
