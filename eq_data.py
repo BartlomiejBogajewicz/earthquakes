@@ -128,8 +128,8 @@ result_with_countries_df = spark.sql("""select  r.place
                                               , r.longitude
                                               , NVL(l.country_name,"Ocean") as country_name
                                       from result_vw r
-                                      left join locations_vw l ON (l.latitude between r.latitude -0.5 and r.latitude + 0.5)
-                                                              and (l.longitude between r.longitude -0.5 and r.longitude + 0.5) """).dropDuplicates(["timestamp_UTC","mag","latitude","longitude"]).cache()
+                                      left join locations_vw l ON (l.latitude between r.latitude -0.2 and r.latitude + 0.2)
+                                                              and (l.longitude between r.longitude -0.2 and r.longitude + 0.2) """).dropDuplicates(["timestamp_UTC","mag","latitude","longitude"]).cache()
 
 # COMMAND ----------
 
