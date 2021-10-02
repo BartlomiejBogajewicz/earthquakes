@@ -4,7 +4,7 @@ location (country,nearest city). Later on I mapped the coordinates of earthquake
 To visualize the data I connected Power Bi to databricks. Below you can see the results from 20.09.2021 to 30.09.2021:
 
 ![main](https://github.com/BartlomiejBogajewicz/earthquakes/blob/master/main_screen.PNG)
-![usa](https://github.com/BartlomiejBogajewicz/earthquakes/blob/master/USA.PNG
+![usa](https://github.com/BartlomiejBogajewicz/earthquakes/blob/master/USA.PNG)
 ![greece](https://github.com/BartlomiejBogajewicz/earthquakes/blob/master/Greece.PNG)
 
 We can clearly see that on west coast of North America and east of Asia tectonic plates overthrust. Also in this time period unusual tectonic activity was recorded in Greece.
